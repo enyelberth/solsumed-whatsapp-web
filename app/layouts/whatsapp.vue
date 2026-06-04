@@ -40,7 +40,10 @@ function mapBackendMessage(bm: BackendMessage) {
   }
 }
 
+const loadError = ref<string | null>(null)
+
 async function loadRecipients() {
+  loadError.value = null
   try {
     const list = await notificationsService.getRecipients()
     const colors = ['bg-red-600', 'bg-blue-600', 'bg-emerald-600', 'bg-teal-600', 'bg-indigo-600', 'bg-purple-600', 'bg-pink-600', 'bg-amber-600']
@@ -77,8 +80,16 @@ async function loadRecipients() {
     )
     
     mockChats.value = loaded
-  } catch (err) {
+  } catch (err: any) {
     console.error('Error al cargar destinatarios del backend:', err)
+    const status = err?.statusCode || err?.response?.status
+    const backendMsg =
+      err?.data?.message ||
+      err?.response?._data?.message ||
+      err?.message ||
+      'sin detalle'
+    const detail = Array.isArray(backendMsg) ? backendMsg.join(', ') : backendMsg
+    loadError.value = `HTTP ${status ?? '?'}: ${detail}`
   }
 }
 
@@ -90,30 +101,93 @@ function handleSelectChat(id: string) {
   if (chat) chat.unreadCount = 0
 }
 
-async function handleAddChat({ name, phone }: { name: string; phone: string }) {
+async function handleAddChat(payload: {
+  name: string
+  phone: string
+  useTemplate?: boolean
+  templateName?: string
+  templateLang?: string
+  templateParams?: string[]
+  initialMessage?: string
+}) {
+  const { name, phone, useTemplate, templateName, templateLang, templateParams, initialMessage } = payload
   try {
     const formattedPhone = phone.startsWith('+') ? phone : `+${phone}`
-    const existing = mockChats.value.find(c => c.phone === formattedPhone)
-    if (existing) { selectedChatId.value = existing.id; return }
+    let existing = mockChats.value.find(c => c.phone === formattedPhone)
+    let recipientId: number | string
+    let chat: any
 
-    const recipient = await notificationsService.createRecipient({ name, phone: formattedPhone })
-    const colors = ['bg-red-600', 'bg-blue-600', 'bg-emerald-600', 'bg-teal-600', 'bg-indigo-600', 'bg-purple-600', 'bg-pink-600', 'bg-amber-600']
-    const newChat = {
-      id: String(recipient.id),
-      name: recipient.name,
-      phone: recipient.phone,
-      avatarColor: colors[mockChats.value.length % colors.length],
-      unreadCount: 0,
-      messages: [],
-      isPinned: false,
-      isArchived: false,
-      isGroup: recipient.phone.includes('grupo') || !recipient.phone.startsWith('+')
+    if (existing) {
+      chat = existing
+      recipientId = existing.id
+      selectedChatId.value = existing.id
+    } else {
+      const recipient = await notificationsService.createRecipient({ name, phone: formattedPhone })
+      recipientId = recipient.id
+      const colors = ['bg-red-600', 'bg-blue-600', 'bg-emerald-600', 'bg-teal-600', 'bg-indigo-600', 'bg-purple-600', 'bg-pink-600', 'bg-amber-600']
+      chat = {
+        id: String(recipient.id),
+        name: recipient.name,
+        phone: recipient.phone,
+        avatarColor: colors[mockChats.value.length % colors.length],
+        unreadCount: 0,
+        messages: [],
+        isPinned: false,
+        isArchived: false,
+        isGroup: recipient.phone.includes('grupo') || !recipient.phone.startsWith('+')
+      }
+      mockChats.value.unshift(chat)
+      selectedChatId.value = chat.id
     }
-    mockChats.value.unshift(newChat)
-    selectedChatId.value = newChat.id
-  } catch (err) {
+
+    // Enviar mensaje inicial (template o texto)
+    let res: { success: boolean; messageId: string; error?: string } | null = null
+    let sentPayload: any = null
+    if (useTemplate && templateName) {
+      sentPayload = { templateName, templateLang: templateLang || 'es', templateParams: templateParams || [] }
+      console.log('[whatsapp] sendTemplate payload:', sentPayload)
+      res = await notificationsService.sendTemplate(
+        recipientId,
+        templateName,
+        templateLang || 'es',
+        templateParams || [],
+      )
+    } else if (initialMessage) {
+      sentPayload = { message: initialMessage }
+      console.log('[whatsapp] sendText payload:', sentPayload)
+      res = await notificationsService.sendText(recipientId, initialMessage)
+    }
+
+    if (res) {
+      if (res.success) {
+        chat.messages.push({
+          id: res.messageId,
+          text: useTemplate ? `[Template: ${templateName}]` : (initialMessage || ''),
+          sender: 'me',
+          time: getCurrentTime(),
+          status: 'delivered',
+          type: 'text',
+        })
+      } else {
+        console.error('[whatsapp] envío fallido', { sentPayload, error: res.error })
+        alert(
+          `Contacto creado pero envío inicial falló.\n\n` +
+          `Payload enviado: ${JSON.stringify(sentPayload)}\n\n` +
+          `Error: ${res.error ?? 'desconocido'}\n\n` +
+          `Revisa que el template "${templateName}" exista en Meta Business Manager con ese idioma + número de parámetros.`,
+        )
+      }
+    }
+  } catch (err: any) {
     console.error('Error al crear contacto:', err)
-    alert('No se pudo crear el contacto en el backend.')
+    const status = err?.statusCode || err?.response?.status
+    const backendMsg =
+      err?.data?.message ||
+      err?.response?._data?.message ||
+      err?.message ||
+      'sin detalle'
+    const detail = Array.isArray(backendMsg) ? backendMsg.join(', ') : backendMsg
+    alert(`No se pudo crear el contacto (HTTP ${status ?? '?'}): ${detail}`)
   }
 }
 
@@ -143,7 +217,7 @@ async function handleSendMessage(
   })
 
   try {
-    let response: { success: boolean; messageId: string }
+    let response: { success: boolean; messageId: string; error?: string }
     if (type === 'text') {
       response = await notificationsService.sendText(currentChat.id, text)
     } else {
@@ -156,10 +230,23 @@ async function handleSendMessage(
       found.id = response.messageId
       found.status = 'delivered'
       setTimeout(() => { if (found) found.status = 'read' }, 1500)
+    } else if (found) {
+      found.status = 'failed'
+      alert(`No se pudo enviar el mensaje: ${response.error ?? 'error desconocido del agente WhatsApp'}`)
     }
   }
-  catch (err) { 
-    console.error('Error enviando mensaje al backend NestJS:', err) 
+  catch (err: any) {
+    console.error('Error enviando mensaje al backend NestJS:', err)
+    const found = currentChat.messages.find((m: any) => m.id === msgId)
+    if (found) found.status = 'failed'
+    const status = err?.statusCode || err?.response?.status
+    const backendMsg =
+      err?.data?.message ||
+      err?.response?._data?.message ||
+      err?.message ||
+      'sin detalle'
+    const detail = Array.isArray(backendMsg) ? backendMsg.join(', ') : backendMsg
+    alert(`No se pudo enviar el mensaje (HTTP ${status ?? '?'}): ${detail}`)
   }
 }
 

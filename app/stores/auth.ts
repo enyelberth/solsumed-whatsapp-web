@@ -35,14 +35,20 @@ export const useAuthStore = defineStore('auth', {
 
     async login(credentials: LoginCredentials): Promise<User> {
       const api = useSolsumedApi()
-      const res = await api<LoginResponse>('/auth/login', {
+      const res = await api<any>('/auth/login', {
         method: 'POST',
-        body: credentials,
+        body: {
+          identifier: credentials.email,
+          password: credentials.password,
+        },
       })
+      const token = res.token ?? res.access_token
+      const expiresAt = res.expiresAt
+        ?? (res.expires_at ? Date.parse(res.expires_at) : Date.now() + 1000 * 60 * 60 * 8)
       const next: AuthSession = {
         user: res.user,
-        token: res.token,
-        expiresAt: res.expiresAt ?? Date.now() + 1000 * 60 * 60 * 8,
+        token,
+        expiresAt,
       }
       this.session = next
       writeSession(next)

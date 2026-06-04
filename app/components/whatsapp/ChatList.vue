@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 
 interface Message {
   id: string
@@ -91,14 +91,60 @@ const showNewChatPanel = ref(false)
 const newChatName = ref('')
 const newChatPhone = ref('')
 const newChatError = ref('')
+const useTemplate = ref(true)
+const templatePreset = ref('hello_world')
+const templateName = ref('hello_world')
+const templateLang = ref('en_US')
+const templateParams = ref('')
+const initialMessage = ref('')
+
+const TEMPLATE_PRESETS = [
+  { id: 'hello_world', name: 'hello_world', lang: 'en_US', label: 'hello_world (saludo Meta, sin params)', params: '', requiredParams: 0 },
+  { id: 'reposicion_inventario', name: 'reposicion_inventario', lang: 'es', label: 'reposicion_inventario (3 params: cantidad | falta | resumen)', params: '1 | 100 | Aviso de prueba', requiredParams: 3 },
+  { id: 'custom', name: '', lang: 'es', label: 'Custom (definir manualmente)', params: '', requiredParams: 0 },
+] as const
+
+watch(templatePreset, (id) => {
+  const p = TEMPLATE_PRESETS.find(x => x.id === id)
+  if (p && p.id !== 'custom') {
+    templateName.value = p.name
+    templateLang.value = p.lang
+    templateParams.value = p.params
+  }
+})
 
 function handleCreateChat() {
   newChatError.value = ''
   const phoneVal = newChatPhone.value.replace(/\D/g, '')
   if (!newChatName.value.trim()) { newChatError.value = 'El nombre es obligatorio.'; return }
   if (!phoneVal || phoneVal.length < 8) { newChatError.value = 'Número inválido.'; return }
-  emit('add-chat', { name: newChatName.value.trim(), phone: phoneVal })
+  if (useTemplate.value && !templateName.value.trim()) {
+    newChatError.value = 'Nombre del template requerido.'; return
+  }
+  if (!useTemplate.value && !initialMessage.value.trim()) {
+    newChatError.value = 'Escribe un mensaje inicial o usa template.'; return
+  }
+  const params = templateParams.value
+    .split('|').map(s => s.trim()).filter(Boolean)
+  if (useTemplate.value) {
+    const preset = TEMPLATE_PRESETS.find(p => p.id === templatePreset.value)
+    const required = preset?.requiredParams ?? 0
+    if (required > 0 && params.length !== required) {
+      newChatError.value = `Template "${templateName.value}" requiere ${required} parámetros (separados por |). Diste ${params.length}.`
+      return
+    }
+  }
+  emit('add-chat', {
+    name: newChatName.value.trim(),
+    phone: phoneVal,
+    useTemplate: useTemplate.value,
+    templateName: templateName.value.trim(),
+    templateLang: templateLang.value.trim() || 'es',
+    templateParams: params,
+    initialMessage: initialMessage.value.trim(),
+  })
   newChatName.value = ''; newChatPhone.value = ''
+  templateParams.value = ''; initialMessage.value = ''
   showNewChatPanel.value = false
 }
 
@@ -306,6 +352,50 @@ function isUnreadTime(chat: Chat) {
               @keyup.enter="handleCreateChat"
               class="w-full h-10 px-3 text-[14px] rounded-lg border border-[#e9edef] dark:border-[#222d34] bg-[#f0f2f5] dark:bg-[#2a3942] text-[#111b21] dark:text-[#e9edef] placeholder-[#8696a0] focus:outline-none focus:border-[#00a884] focus:ring-1 focus:ring-[#00a884] transition-colors" />
           </div>
+
+          <div class="rounded-lg bg-[#f0f2f5] dark:bg-[#2a3942] px-3 py-2.5 space-y-2">
+            <label class="flex items-center gap-2 text-[13px] text-[#3b4a54] dark:text-[#e9edef] cursor-pointer">
+              <input v-model="useTemplate" type="checkbox" class="w-4 h-4 accent-[#00a884]" />
+              <span>Usar template aprobado <span class="text-[#8696a0]">(requerido si el contacto no te escribió en 24h)</span></span>
+            </label>
+          </div>
+
+          <template v-if="useTemplate">
+            <div class="space-y-1.5">
+              <label class="text-[12px] font-medium text-[#008069] dark:text-[#00a884]">Plantilla aprobada</label>
+              <select v-model="templatePreset"
+                class="w-full h-10 px-3 text-[14px] rounded-lg border border-[#e9edef] dark:border-[#222d34] bg-[#f0f2f5] dark:bg-[#2a3942] text-[#111b21] dark:text-[#e9edef] focus:outline-none focus:border-[#00a884] focus:ring-1 focus:ring-[#00a884] transition-colors">
+                <option v-for="p in TEMPLATE_PRESETS" :key="p.id" :value="p.id">{{ p.label }}</option>
+              </select>
+            </div>
+            <div v-if="templatePreset === 'custom'" class="grid grid-cols-2 gap-2">
+              <div class="space-y-1.5">
+                <label class="text-[12px] font-medium text-[#008069] dark:text-[#00a884]">Template</label>
+                <input v-model="templateName" type="text" placeholder="nombre_template"
+                  class="w-full h-10 px-3 text-[14px] rounded-lg border border-[#e9edef] dark:border-[#222d34] bg-[#f0f2f5] dark:bg-[#2a3942] text-[#111b21] dark:text-[#e9edef] placeholder-[#8696a0] focus:outline-none focus:border-[#00a884] focus:ring-1 focus:ring-[#00a884] transition-colors" />
+              </div>
+              <div class="space-y-1.5">
+                <label class="text-[12px] font-medium text-[#008069] dark:text-[#00a884]">Idioma</label>
+                <input v-model="templateLang" type="text" placeholder="en_US / es"
+                  class="w-full h-10 px-3 text-[14px] rounded-lg border border-[#e9edef] dark:border-[#222d34] bg-[#f0f2f5] dark:bg-[#2a3942] text-[#111b21] dark:text-[#e9edef] placeholder-[#8696a0] focus:outline-none focus:border-[#00a884] focus:ring-1 focus:ring-[#00a884] transition-colors" />
+              </div>
+            </div>
+            <div class="space-y-1.5">
+              <label class="text-[12px] font-medium text-[#008069] dark:text-[#00a884]">Parámetros body (separa con |)</label>
+              <input v-model="templateParams" type="text" placeholder="valor1 | valor2"
+                class="w-full h-10 px-3 text-[14px] rounded-lg border border-[#e9edef] dark:border-[#222d34] bg-[#f0f2f5] dark:bg-[#2a3942] text-[#111b21] dark:text-[#e9edef] placeholder-[#8696a0] focus:outline-none focus:border-[#00a884] focus:ring-1 focus:ring-[#00a884] transition-colors" />
+            </div>
+          </template>
+
+          <template v-else>
+            <div class="space-y-1.5">
+              <label class="text-[12px] font-medium text-[#008069] dark:text-[#00a884]">Mensaje inicial</label>
+              <textarea v-model="initialMessage" placeholder="Escribe el primer mensaje..." rows="3"
+                class="w-full px-3 py-2 text-[14px] rounded-lg border border-[#e9edef] dark:border-[#222d34] bg-[#f0f2f5] dark:bg-[#2a3942] text-[#111b21] dark:text-[#e9edef] placeholder-[#8696a0] focus:outline-none focus:border-[#00a884] focus:ring-1 focus:ring-[#00a884] transition-colors resize-none"></textarea>
+              <p class="text-[11px] text-amber-600">⚠️ Solo funciona si el contacto te escribió en las últimas 24h. Sino usa template.</p>
+            </div>
+          </template>
+
           <p v-if="newChatError" class="text-[12px] text-red-500">{{ newChatError }}</p>
           <button @click="handleCreateChat"
             class="w-full h-10 rounded-lg bg-[#00a884] hover:bg-[#008f72] text-white text-[14px] font-medium transition-colors">

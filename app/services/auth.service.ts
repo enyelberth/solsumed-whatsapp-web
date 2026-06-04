@@ -10,7 +10,10 @@ export const authService = {
     const api = useSolsumedApi()
     return api<LoginResponse>('/auth/login', {
       method: 'POST',
-      body: credentials,
+      body: {
+        identifier: credentials.email,
+        password: credentials.password,
+      },
     })
   },
 

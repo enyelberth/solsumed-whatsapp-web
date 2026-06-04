@@ -31,8 +31,8 @@ export default defineNuxtConfig({
   runtimeConfig: {
     authSecret: process.env.AUTH_SECRET || 'solsumed-dev-secret',
     public: {
-      solsumedApiUrl: process.env.NUXT_PUBLIC_SOLSUMED_API_URL || 'http://localhost:4000',
-      whatsappApiUrl: process.env.NUXT_PUBLIC_WHATSAPP_API_URL || 'http://localhost:5000',
+      solsumedApiUrl: process.env.NUXT_PUBLIC_SOLSUMED_API_URL || 'http://localhost:3000',
+      whatsappApiUrl: process.env.NUXT_PUBLIC_WHATSAPP_API_URL || 'http://localhost:6000',
       appName: 'Solsumed WhatsApp',
     },
   },
