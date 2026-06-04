@@ -3,8 +3,122 @@
 
 :root {
   --app-bg: #f8fafc;
+  
+  /* WhatsApp Light Theme Colors */
+  --wa-bg-sidebar: #ffffff;
+  --wa-bg-header: #f0f2f5;
+  --wa-bg-chat: #efeae2;
+  --wa-bg-search: #f0f2f5;
+  --wa-bg-search-input: #ffffff;
+  --wa-bg-active: #eae6df;
+  --wa-bg-hover: #f5f6f6;
+  --wa-bubble-out: #d9fdd3;
+  --wa-bubble-in: #ffffff;
+  --wa-text-primary: #111b21;
+  --wa-text-secondary: #667781;
+  --wa-text-title: #111b21;
+  --wa-green: #00a884;
+  --wa-green-hover: #008f72;
+  --wa-blue: #53bdeb;
+  --wa-border: #e9edef;
+  --wa-icon: #54656f;
+}
+
+.dark {
+  --app-bg: #0c1317;
+  
+  /* WhatsApp Dark Theme Colors */
+  --wa-bg-sidebar: #111b21;
+  --wa-bg-header: #202c33;
+  --wa-bg-chat: #0b141a;
+  --wa-bg-search: #111b21;
+  --wa-bg-search-input: #202c33;
+  --wa-bg-active: #2a3942;
+  --wa-bg-hover: #202c33;
+  --wa-bubble-out: #005c4b;
+  --wa-bubble-in: #202c33;
+  --wa-text-primary: #e9edef;
+  --wa-text-secondary: #8696a0;
+  --wa-text-title: #e9edef;
+  --wa-green: #00a884;
+  --wa-green-hover: #01755b;
+  --wa-blue: #53bdeb;
+  --wa-border: #222d34;
+  --wa-icon: #aebac1;
 }
 
 html, body, #__nuxt {
   height: 100%;
 }
+
+/* Custom Scrollbar for Chat */
+.wa-scrollbar::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.wa-scrollbar::-webkit-scrollbar-thumb {
+  background-color: rgba(0, 0, 0, 0.1);
+  border-radius: 3px;
+}
+.dark .wa-scrollbar::-webkit-scrollbar-thumb {
+  background-color: rgba(255, 255, 255, 0.1);
+}
+.wa-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* ── WhatsApp message bubble tails ─────────────────────────────── */
+
+/* Sent (right, green) — tail on top-right */
+.wa-bubble-out {
+  position: relative;
+}
+.wa-bubble-out::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: -8px;
+  width: 0;
+  height: 0;
+  border-style: solid;
+  border-width: 0px 0px 10px 8px;
+  border-color: transparent transparent transparent #d9fdd3;
+}
+.dark .wa-bubble-out::before {
+  border-color: transparent transparent transparent #005c4b;
+}
+
+/* Received (left, white) — tail on top-left */
+.wa-bubble-in {
+  position: relative;
+}
+.wa-bubble-in::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -8px;
+  width: 0;
+  height: 0;
+  border-style: solid;
+  border-width: 0px 8px 10px 0px;
+  border-color: transparent #ffffff transparent transparent;
+}
+.dark .wa-bubble-in::before {
+  border-color: transparent #202c33 transparent transparent;
+}
+
+/* ── WhatsApp chat wallpaper (SVG pattern) ──────────────────────── */
+.wa-chat-bg {
+  background-color: #efeae2;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='80' height='80'%3E%3Cg fill='none' stroke='%23d1c4b0' stroke-width='0.6' opacity='0.5'%3E%3Ccircle cx='20' cy='20' r='7'/%3E%3Cpath d='M13 20 Q20 27 27 20 Q20 13 13 20'/%3E%3Ccircle cx='60' cy='20' r='7'/%3E%3Cpath d='M53 20 Q60 27 67 20 Q60 13 53 20'/%3E%3Ccircle cx='20' cy='60' r='7'/%3E%3Cpath d='M13 60 Q20 67 27 60 Q20 53 13 60'/%3E%3Ccircle cx='60' cy='60' r='7'/%3E%3Cpath d='M53 60 Q60 67 67 60 Q60 53 53 60'/%3E%3Cpath d='M38 10 L42 10 L42 14 L38 14 Z'/%3E%3Cpath d='M38 50 L42 50 L42 54 L38 54 Z'/%3E%3Cpath d='M8 38 L8 42 L12 42 L12 38 Z'/%3E%3Cpath d='M68 38 L68 42 L72 42 L72 38 Z'/%3E%3C/g%3E%3C/svg%3E");
+}
+.dark .wa-chat-bg {
+  background-color: #0b141a;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='80' height='80'%3E%3Cg fill='none' stroke='%23182229' stroke-width='0.8' opacity='0.9'%3E%3Ccircle cx='20' cy='20' r='7'/%3E%3Cpath d='M13 20 Q20 27 27 20 Q20 13 13 20'/%3E%3Ccircle cx='60' cy='20' r='7'/%3E%3Cpath d='M53 20 Q60 27 67 20 Q60 13 53 20'/%3E%3Ccircle cx='20' cy='60' r='7'/%3E%3Cpath d='M13 60 Q20 67 27 60 Q20 53 13 60'/%3E%3Ccircle cx='60' cy='60' r='7'/%3E%3Cpath d='M53 60 Q60 67 67 60 Q60 53 53 60'/%3E%3Cpath d='M38 10 L42 10 L42 14 L38 14 Z'/%3E%3Cpath d='M38 50 L42 50 L42 54 L38 54 Z'/%3E%3Cpath d='M8 38 L8 42 L12 42 L12 38 Z'/%3E%3Cpath d='M68 38 L68 42 L72 42 L72 38 Z'/%3E%3C/g%3E%3C/svg%3E");
+}
+
+/* ── Base font (WhatsApp uses Segoe UI / system-ui) ─────────────── */
+.wa-font {
+  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+}
+

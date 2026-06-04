@@ -1,3 +1,5 @@
+import tailwindcss from '@tailwindcss/vite'
+
 // https://nuxt.com/docs/api/configuration/nuxt-config
 export default defineNuxtConfig({
   modules: [
@@ -7,19 +9,23 @@ export default defineNuxtConfig({
     '@pinia/nuxt',
   ],
 
-  pinia: {
-    storesDirs: ['./app/stores/**'],
-  },
-
   devtools: { enabled: true },
   ssr: false,
   compatibilityDate: '2025-01-01',
 
   css: ['~/assets/css/main.css'],
 
+  vite: {
+    plugins: [tailwindcss()],
+  },
+
   typescript: {
     strict: true,
     typeCheck: false,
+  },
+
+  pinia: {
+    storesDirs: ['./app/stores/**'],
   },
 
   runtimeConfig: {

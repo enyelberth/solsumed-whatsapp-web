@@ -8,6 +8,9 @@ interface WhatsAppState {
   sending: boolean
   sendError: string | null
   lastResult: WhatsAppSendResult | null
+  qr: string | null
+  loadingQr: boolean
+  qrError: string | null
 }
 
 export const useWhatsappStore = defineStore('whatsapp', {
@@ -18,6 +21,9 @@ export const useWhatsappStore = defineStore('whatsapp', {
     sending: false,
     sendError: null,
     lastResult: null,
+    qr: null,
+    loadingQr: false,
+    qrError: null,
   }),
 
   getters: {
@@ -37,6 +43,23 @@ export const useWhatsappStore = defineStore('whatsapp', {
       }
       finally {
         this.loadingStatus = false
+      }
+    },
+
+    async loadQrCode() {
+      this.loadingQr = true
+      this.qrError = null
+      this.qr = null
+      try {
+        const res = await whatsappService.getQrCode()
+        this.qr = res.qr
+      }
+      catch (err: unknown) {
+        const e = err as { message?: string }
+        this.qrError = e.message ?? 'No se pudo obtener el código QR'
+      }
+      finally {
+        this.loadingQr = false
       }
     },
 
