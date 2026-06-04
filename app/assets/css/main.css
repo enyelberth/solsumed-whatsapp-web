@@ -1,0 +1,10 @@
+@import "tailwindcss";
+@import "@nuxt/ui";
+
+:root {
+  --app-bg: #f8fafc;
+}
+
+html, body, #__nuxt {
+  height: 100%;
+}
