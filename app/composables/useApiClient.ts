@@ -6,7 +6,7 @@ interface CreateClientOptions {
   onUnauthorized?: () => void | Promise<void>
 }
 
-export function createApiClient({ baseURL, getToken, onUnauthorized }: CreateClientOptions): $Fetch {
+export function createApiClient({ baseURL, getToken, onUnauthorized }: CreateClientOptions): ReturnType<typeof $fetch.create> {
   return $fetch.create({
     baseURL,
     onRequest({ options }) {
@@ -27,5 +27,6 @@ export function createApiClient({ baseURL, getToken, onUnauthorized }: CreateCli
   })
 }
 
-export type ApiClient = $Fetch
+export type ApiClient = ReturnType<typeof $fetch.create>
 export type ApiClientOptions = FetchOptions
+

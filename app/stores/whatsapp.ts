@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import type { WhatsAppMessage, WhatsAppSendResult, WhatsAppStatus } from '~/types/whatsapp'
+import { whatsappService } from '~/services/whatsapp.service'
 
 interface WhatsAppState {
   status: WhatsAppStatus | null

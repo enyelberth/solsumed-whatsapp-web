@@ -16,6 +16,9 @@ interface Chat {
   avatarColor: string
   unreadCount: number
   messages: Message[]
+  isPinned?: boolean
+  isArchived?: boolean
+  isGroup?: boolean
 }
 
 const props = defineProps<{
@@ -24,6 +27,7 @@ const props = defineProps<{
   userEmail: string
   phoneNumber?: string
   loadingStatus: boolean
+  drafts?: Record<string, string>
 }>()
 
 const emit = defineEmits<{
@@ -33,10 +37,13 @@ const emit = defineEmits<{
   'logout': []
   'delete-chats': [ids: string[]]
   'mark-chats-unread-status': [payload: { ids: string[]; isRead: boolean }]
+  'toggle-pin-chat': [id: string]
+  'toggle-archive-chat': [id: string]
+  'bulk-archive-chats': [payload: { ids: string[]; isArchive: boolean }]
 }>()
 
 // ── Filter tabs ────────────────────────────────────────────────────
-type FilterTab = 'all' | 'unread' | 'groups'
+type FilterTab = 'all' | 'unread' | 'groups' | 'contacts'
 const activeTab = ref<FilterTab>('all')
 
 // ── Search ─────────────────────────────────────────────────────────
@@ -47,15 +54,36 @@ function openSearch() { isSearching.value = true }
 function closeSearch() { isSearching.value = false; searchQuery.value = '' }
 
 const filteredChats = computed(() => {
-  let list = props.chats
-  if (activeTab.value === 'unread') list = list.filter(c => c.unreadCount > 0)
+  let list = props.chats.filter(c => !c.isArchived)
+  if (activeTab.value === 'unread') {
+    list = list.filter(c => c.unreadCount > 0)
+  } else if (activeTab.value === 'groups') {
+    list = list.filter(c => c.isGroup)
+  } else if (activeTab.value === 'contacts') {
+    list = list.filter(c => !c.isGroup)
+  }
   const q = searchQuery.value.trim().toLowerCase()
-  if (!q) return list
-  return list.filter(c =>
+  if (!q) {
+    return [...list].sort((a, b) => {
+      const aPinned = a.isPinned ? 1 : 0
+      const bPinned = b.isPinned ? 1 : 0
+      if (aPinned !== bPinned) return bPinned - aPinned
+      
+      const aTime = getLastTime(a)
+      const bTime = getLastTime(b)
+      return bTime.localeCompare(aTime)
+    })
+  }
+  list = list.filter(c =>
     c.name.toLowerCase().includes(q) ||
     c.phone.includes(q) ||
     c.messages.some(m => m.text.toLowerCase().includes(q))
   )
+  return [...list].sort((a, b) => {
+    const aPinned = a.isPinned ? 1 : 0
+    const bPinned = b.isPinned ? 1 : 0
+    return bPinned - aPinned
+  })
 })
 
 // ── New Chat Panel ─────────────────────────────────────────────────
@@ -90,6 +118,24 @@ const showMenu = ref(false)
 const isSelectionMode = ref(false)
 const selectedChatIds = ref<Set<string>>(new Set())
 const activeItemMenuChatId = ref<string | null>(null)
+const showArchivedPanel = ref(false)
+
+const archivedChats = computed(() => {
+  return props.chats.filter(c => c.isArchived)
+})
+
+const archivedChatsCount = computed(() => {
+  return archivedChats.value.length
+})
+
+function handleBulkArchive(isArchive: boolean) {
+  if (selectedChatIds.value.size === 0) return
+  emit('bulk-archive-chats', {
+    ids: Array.from(selectedChatIds.value),
+    isArchive
+  })
+  exitSelectionMode()
+}
 
 function toggleItemMenu(chatId: string, event?: Event) {
   if (event) event.stopPropagation()
@@ -269,6 +315,96 @@ function isUnreadTime(chat: Chat) {
       </div>
     </Transition>
 
+    <!-- ══ ARCHIVED CHATS PANEL ══════════════════════════════════════ -->
+    <Transition
+      enter-active-class="transition-transform duration-200 ease-out"
+      enter-from-class="-translate-x-full"
+      enter-to-class="translate-x-0"
+      leave-active-class="transition-transform duration-150 ease-in"
+      leave-from-class="translate-x-0"
+      leave-to-class="-translate-x-full"
+    >
+      <div v-if="showArchivedPanel" class="absolute inset-0 z-40 flex flex-col bg-[#ffffff] dark:bg-[#111b21]">
+        <!-- Panel Header -->
+        <div class="h-[114px] bg-[#008069] dark:bg-[#202c33] flex flex-col justify-end px-5 pb-4 shrink-0">
+          <div class="flex items-center gap-6">
+            <button @click="showArchivedPanel = false"
+              class="text-white hover:bg-white/10 p-1.5 rounded-full transition-colors">
+              <UIcon name="i-lucide-arrow-left" class="w-5 h-5" />
+            </button>
+            <span class="text-white text-[19px] font-medium">Archivados</span>
+          </div>
+        </div>
+        <!-- List -->
+        <div class="flex-1 overflow-y-auto wa-scrollbar">
+          <div v-if="archivedChats.length === 0" class="flex flex-col items-center justify-center h-full text-center px-6">
+            <UIcon name="i-lucide-archive" class="w-12 h-12 text-[#8696a0] mb-2" />
+            <p class="text-[14px] text-[#8696a0]">No hay chats archivados</p>
+          </div>
+          <div
+            v-for="chat in archivedChats"
+            :key="chat.id"
+            @click="emit('select-chat', chat.id); showArchivedPanel = false"
+            class="h-[72px] flex items-center pl-3 pr-4 cursor-pointer hover:bg-[#f5f6f6] dark:hover:bg-[#202c33] group relative select-none"
+          >
+            <div :class="['w-[49px] h-[49px] rounded-full flex items-center justify-center font-semibold text-white text-[18px] shrink-0', chat.avatarColor]">
+              {{ getInitials(chat.name) }}
+            </div>
+            <div class="flex-1 min-w-0 ml-3 border-b border-[#e9edef] dark:border-[#222d34] h-full flex flex-col justify-center relative">
+              <div class="flex items-center justify-between">
+                <span class="text-[16px] font-normal text-[#111b21] dark:text-[#e9edef] truncate leading-snug">
+                  {{ chat.name }}
+                </span>
+                <span class="shrink-0 ml-2 text-[12px] text-[#667781] dark:text-[#8696a0]">
+                  {{ getLastTime(chat) }}
+                </span>
+              </div>
+              <div class="flex items-center justify-between mt-[3px] relative">
+                <span class="text-[13px] text-[#667781] dark:text-[#8696a0] truncate leading-snug">
+                  {{ getLastMessage(chat)?.text ?? 'Sin mensajes' }}
+                </span>
+                <div class="relative flex items-center">
+                  <button
+                    @click.stop="toggleItemMenu(chat.id, $event)"
+                    class="opacity-0 group-hover:opacity-100 flex items-center justify-center text-[#8696a0] hover:text-[#54656f] dark:hover:text-[#e9edef] transition-opacity p-0.5 rounded-full hover:bg-black/5 dark:hover:bg-white/5"
+                  >
+                    <UIcon name="i-lucide-chevron-down" class="w-5 h-5" />
+                  </button>
+                  <Transition
+                    enter-active-class="transition duration-100 ease-out"
+                    enter-from-class="opacity-0 scale-95"
+                    enter-to-class="opacity-100 scale-100"
+                    leave-active-class="transition duration-75 ease-in"
+                    leave-from-class="opacity-100 scale-100"
+                    leave-to-class="opacity-0 scale-95"
+                  >
+                    <div
+                      v-if="activeItemMenuChatId === chat.id"
+                      v-click-outside="closeItemMenu"
+                      class="absolute right-0 top-6 z-50 w-44 bg-white dark:bg-[#233138] shadow-lg rounded-md py-1 text-[13px] text-[#3b4a54] dark:text-[#e9edef] border border-[#e9edef] dark:border-[#222d34]"
+                    >
+                      <button
+                        @click.stop="closeItemMenu(); emit('toggle-archive-chat', chat.id)"
+                        class="w-full text-left px-4 py-2 hover:bg-[#f5f6f6] dark:hover:bg-[#2a3942] transition-colors"
+                      >
+                        Desarchivar chat
+                      </button>
+                      <button
+                        @click.stop="closeItemMenu(); emit('delete-chats', [chat.id])"
+                        class="w-full text-left px-4 py-2 text-red-500 hover:bg-[#f5f6f6] dark:hover:bg-[#2a3942] transition-colors"
+                      >
+                        Eliminar chat
+                      </button>
+                    </div>
+                  </Transition>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </Transition>
+
     <!-- ══ SELECTION HEADER ════════════════════════════════════════ -->
     <div v-if="isSelectionMode" class="h-[59px] px-4 bg-[#f0f2f5] dark:bg-[#202c33] flex items-center justify-between shrink-0 border-b border-[#e9edef] dark:border-[#222d34] relative">
       <div class="flex items-center gap-4">
@@ -294,6 +430,10 @@ function isUnreadTime(chat: Chat) {
         <!-- Mark as unread -->
         <button @click="handleBulkMarkRead(false)" title="Marcar como no leídos" :disabled="selectedChatIds.size === 0" class="w-[40px] h-[40px] flex items-center justify-center rounded-full hover:bg-[#d9dbdf] dark:hover:bg-[#3b4a54] disabled:opacity-40 transition-colors">
           <UIcon name="i-lucide-mail" class="w-5 h-5" />
+        </button>
+        <!-- Archive selected -->
+        <button @click="handleBulkArchive(true)" title="Archivar chats" :disabled="selectedChatIds.size === 0" class="w-[40px] h-[40px] flex items-center justify-center rounded-full hover:bg-[#d9dbdf] dark:hover:bg-[#3b4a54] disabled:opacity-40 transition-colors">
+          <UIcon name="i-lucide-archive" class="w-5 h-5" />
         </button>
         <!-- Delete -->
         <button @click="handleBulkDelete" title="Eliminar chats" :disabled="selectedChatIds.size === 0" class="w-[40px] h-[40px] flex items-center justify-center rounded-full hover:bg-[#d9dbdf] dark:hover:bg-[#3b4a54] text-red-500 disabled:opacity-40 transition-colors">
@@ -418,10 +558,10 @@ function isUnreadTime(chat: Chat) {
     <!-- ══ FILTER TABS ═══════════════════════════════════════════════ -->
     <div class="flex items-center px-3 pb-1 gap-2 shrink-0 bg-[#ffffff] dark:bg-[#111b21] overflow-x-auto">
       <button
-        v-for="tab in ([{ key: 'all', label: 'Todos' }, { key: 'unread', label: 'No leídos' }, { key: 'groups', label: 'Grupos' }] as const)"
+        v-for="tab in ([{ key: 'all', label: 'Todos' }, { key: 'unread', label: 'No leídos' }, { key: 'contacts', label: 'Contactos' }, { key: 'groups', label: 'Grupos' }] as const)"
         :key="tab.key"
         @click="activeTab = tab.key"
-        class="shrink-0 px-3 h-7 rounded-full text-[12px] font-medium transition-all"
+        class="shrink-0 px-3 h-7 rounded-full text-[12px] font-medium transition-all select-none"
         :class="activeTab === tab.key
           ? 'bg-[#d9fdd3] dark:bg-[#005c4b] text-[#008069] dark:text-[#00a884]'
           : 'bg-[#f0f2f5] dark:bg-[#202c33] text-[#3b4a54] dark:text-[#8696a0] hover:bg-[#e9edef] dark:hover:bg-[#2a3942]'"
@@ -444,6 +584,18 @@ function isUnreadTime(chat: Chat) {
 
     <!-- ══ CHAT LIST ══════════════════════════════════════════════════ -->
     <div class="flex-1 overflow-y-auto wa-scrollbar">
+
+      <!-- Archived Chats Row Trigger -->
+      <div v-if="archivedChatsCount > 0 && !isSelectionMode"
+        @click="showArchivedPanel = true"
+        class="h-[49px] flex items-center px-4 cursor-pointer hover:bg-[#f5f6f6] dark:hover:bg-[#202c33] border-b border-[#e9edef] dark:border-[#222d34] select-none text-[#54656f] dark:text-[#aebac1] shrink-0"
+      >
+        <div class="flex items-center gap-6 flex-1">
+          <UIcon name="i-lucide-archive" class="w-5 h-5 text-[#00a884]" />
+          <span class="text-[15px] font-normal text-[#111b21] dark:text-[#e9edef]">Archivados</span>
+        </div>
+        <span class="text-[12px] font-semibold text-[#00a884]">{{ archivedChatsCount }}</span>
+      </div>
 
       <!-- Empty state -->
       <div v-if="filteredChats.length === 0"
@@ -492,17 +644,20 @@ function isUnreadTime(chat: Chat) {
             <span class="text-[16px] font-normal text-[#111b21] dark:text-[#e9edef] truncate leading-snug">
               {{ chat.name }}
             </span>
-            <span v-if="!isSelectionMode" class="shrink-0 ml-2 text-[12px] leading-none"
-              :class="isUnreadTime(chat) ? 'text-[#00a884]' : 'text-[#667781] dark:text-[#8696a0]'">
-              {{ getLastTime(chat) }}
-            </span>
+            <div class="flex items-center gap-1.5 shrink-0">
+              <UIcon v-if="chat.isPinned" name="i-lucide-pin" class="w-3.5 h-3.5 text-[#8696a0] rotate-45" />
+              <span v-if="!isSelectionMode" class="text-[12px] leading-none"
+                :class="isUnreadTime(chat) ? 'text-[#00a884]' : 'text-[#667781] dark:text-[#8696a0]'">
+                {{ getLastTime(chat) }}
+              </span>
+            </div>
           </div>
 
           <!-- Bottom row: Message preview + Badge -->
           <div class="flex items-center justify-between mt-[3px] relative">
             <div class="flex items-center gap-1 min-w-0 flex-1">
               <!-- Sent status ticks -->
-              <span v-if="getLastMessage(chat)?.sender === 'me'" class="shrink-0 flex items-center">
+              <span v-if="!drafts?.[chat.id] && getLastMessage(chat)?.sender === 'me'" class="shrink-0 flex items-center">
                 <UIcon
                   v-if="getLastMessage(chat)?.status === 'read'"
                   name="i-lucide-check-check"
@@ -514,8 +669,18 @@ function isUnreadTime(chat: Chat) {
                   class="w-[14px] h-[14px] text-[#667781] dark:text-[#8696a0]"
                 />
               </span>
-              <span class="text-[13px] text-[#667781] dark:text-[#8696a0] truncate leading-snug">
-                {{ getLastMessage(chat)?.text ?? 'Sin mensajes' }}
+              
+              <!-- Preview text OR Draft -->
+              <span class="text-[13px] truncate leading-snug">
+                <template v-if="drafts?.[chat.id]">
+                  <span class="text-[#00a884] font-medium mr-1 select-none">Borrador:</span>
+                  <span class="text-[#667781] dark:text-[#8696a0]">{{ drafts[chat.id] }}</span>
+                </template>
+                <template v-else>
+                  <span class="text-[#667781] dark:text-[#8696a0]">
+                    {{ getLastMessage(chat)?.text ?? 'Sin mensajes' }}
+                  </span>
+                </template>
               </span>
             </div>
             
@@ -558,16 +723,22 @@ function isUnreadTime(chat: Chat) {
                       Seleccionar chat
                     </button>
                     <button
+                      @click.stop="closeItemMenu(); emit('toggle-pin-chat', chat.id)"
+                      class="w-full text-left px-4 py-2.5 hover:bg-[#f5f6f6] dark:hover:bg-[#2a3942] transition-colors"
+                    >
+                      {{ chat.isPinned ? 'Desfijar chat' : 'Fijar chat' }}
+                    </button>
+                    <button
+                      @click.stop="closeItemMenu(); emit('toggle-archive-chat', chat.id)"
+                      class="w-full text-left px-4 py-2.5 hover:bg-[#f5f6f6] dark:hover:bg-[#2a3942] transition-colors"
+                    >
+                      {{ chat.isArchived ? 'Desarchivar chat' : 'Archivar chat' }}
+                    </button>
+                    <button
                       @click.stop="closeItemMenu(); emit('mark-chats-unread-status', { ids: [chat.id], isRead: chat.unreadCount > 0 })"
                       class="w-full text-left px-4 py-2.5 hover:bg-[#f5f6f6] dark:hover:bg-[#2a3942] transition-colors"
                     >
                       {{ chat.unreadCount > 0 ? 'Marcar como leído' : 'Marcar como no leído' }}
-                    </button>
-                    <button
-                      @click.stop="closeItemMenu(); window.alert('Chat archivado (simulado)')"
-                      class="w-full text-left px-4 py-2.5 hover:bg-[#f5f6f6] dark:hover:bg-[#2a3942] transition-colors"
-                    >
-                      Archivar chat
                     </button>
                     <div class="border-t border-[#e9edef] dark:border-[#222d34] my-1" />
                     <button
