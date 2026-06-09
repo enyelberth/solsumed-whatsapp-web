@@ -68,10 +68,9 @@ const filteredChats = computed(() => {
       const aPinned = a.isPinned ? 1 : 0
       const bPinned = b.isPinned ? 1 : 0
       if (aPinned !== bPinned) return bPinned - aPinned
-      
-      const aTime = getLastTime(a)
-      const bTime = getLastTime(b)
-      return bTime.localeCompare(aTime)
+
+      // Recientes arriba: ordenar por createdAt del último msg desc
+      return getLastTimestamp(b) - getLastTimestamp(a)
     })
   }
   list = list.filter(c =>
@@ -259,6 +258,15 @@ function getLastMessage(chat: Chat) {
 function getLastTime(chat: Chat) {
   const msg = getLastMessage(chat)
   return msg?.time ?? ''
+}
+function getLastTimestamp(chat: Chat): number {
+  const msg = getLastMessage(chat) as any
+  if (!msg) return 0
+  if (msg.createdAt) {
+    const t = Date.parse(msg.createdAt)
+    if (!Number.isNaN(t)) return t
+  }
+  return 0
 }
 function isUnreadTime(chat: Chat) {
   return chat.unreadCount > 0

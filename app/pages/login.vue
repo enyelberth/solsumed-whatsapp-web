@@ -58,6 +58,7 @@ const currentSlide = computed(() => slides[activeSlide.value] || {
 })
 
 let autoPlayTimer: ReturnType<typeof setInterval> | null = null
+let idleHandle: number | null = null
 
 function startAutoPlay() {
   stopAutoPlay()
@@ -87,11 +88,23 @@ function setSlide(index: number) {
 }
 
 onMounted(() => {
-  startAutoPlay()
+  const w = window as Window & { requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number }
+  if (typeof w.requestIdleCallback === 'function') {
+    idleHandle = w.requestIdleCallback(() => startAutoPlay(), { timeout: 2000 })
+  }
+  else {
+    idleHandle = window.setTimeout(() => startAutoPlay(), 1500)
+  }
 })
 
 onUnmounted(() => {
   stopAutoPlay()
+  if (idleHandle != null) {
+    const w = window as Window & { cancelIdleCallback?: (h: number) => void }
+    if (typeof w.cancelIdleCallback === 'function') w.cancelIdleCallback(idleHandle)
+    else window.clearTimeout(idleHandle)
+    idleHandle = null
+  }
 })
 </script>
 
@@ -112,9 +125,8 @@ onUnmounted(() => {
         <div class="relative w-full aspect-square max-w-[280px] mx-auto mb-6 flex items-center justify-center">
           <!-- Slide 1 Graphic: Distribución / Red Médica -->
           <div
-            v-show="activeSlide === 0"
-            class="absolute inset-0 flex items-center justify-center transition-all duration-700 ease-in-out"
-            :class="activeSlide === 0 ? 'opacity-100 scale-100 rotate-0' : 'opacity-0 scale-95 rotate-3 pointer-events-none'"
+            v-if="activeSlide === 0"
+            class="absolute inset-0 flex items-center justify-center transition-opacity duration-500"
           >
             <svg class="w-full h-full text-teal-300 drop-shadow-xl" viewBox="0 0 200 200" fill="none" xmlns="http://www.w3.org/2000/svg">
               <circle cx="100" cy="100" r="80" fill="currentColor" fill-opacity="0.06" stroke="currentColor" stroke-width="1.5" stroke-dasharray="4 4" />
@@ -143,9 +155,8 @@ onUnmounted(() => {
 
           <!-- Slide 2 Graphic: Medias de Compresión e Insumos -->
           <div
-            v-show="activeSlide === 1"
-            class="absolute inset-0 flex items-center justify-center transition-all duration-700 ease-in-out"
-            :class="activeSlide === 1 ? 'opacity-100 scale-100' : 'opacity-0 scale-95 pointer-events-none'"
+            v-else-if="activeSlide === 1"
+            class="absolute inset-0 flex items-center justify-center transition-opacity duration-500"
           >
             <svg class="w-full h-full text-teal-300 drop-shadow-xl" viewBox="0 0 200 200" fill="none" xmlns="http://www.w3.org/2000/svg">
               <rect x="30" y="30" width="140" height="140" rx="24" fill="currentColor" fill-opacity="0.06" stroke="currentColor" stroke-width="1.5" />
@@ -167,9 +178,8 @@ onUnmounted(() => {
 
           <!-- Slide 3 Graphic: Logística y Paquetes de Distribución -->
           <div
-            v-show="activeSlide === 2"
-            class="absolute inset-0 flex items-center justify-center transition-all duration-700 ease-in-out"
-            :class="activeSlide === 2 ? 'opacity-100 scale-100' : 'opacity-0 scale-95 pointer-events-none'"
+            v-else-if="activeSlide === 2"
+            class="absolute inset-0 flex items-center justify-center transition-opacity duration-500"
           >
             <svg class="w-full h-full text-teal-300 drop-shadow-xl" viewBox="0 0 200 200" fill="none" xmlns="http://www.w3.org/2000/svg">
               <path d="M20 100C20 55.8172 55.8172 20 100 20C144.183 20 180 55.8172 180 100C180 144.183 144.183 180 100 180C55.8172 180 20 144.183 20 100Z" fill="currentColor" fill-opacity="0.05" />

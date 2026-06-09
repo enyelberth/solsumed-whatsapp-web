@@ -4,6 +4,7 @@ import { storeToRefs } from 'pinia'
 import { notificationsService } from '~/services/notifications.service'
 import type { BackendMessage } from '~/services/notifications.service'
 import type { RealtimeMessage, RealtimeStatus, RealtimeTranscription } from '~/composables/useNotificationsSocket'
+import { playNotificationSound, primeNotificationSound } from '~/composables/useNotificationSound'
 
 const auth = useAuthStore()
 const { user } = storeToRefs(auth)
@@ -35,6 +36,7 @@ function mapBackendMessage(bm: BackendMessage) {
     text: bm.message || '',
     sender: bm.direction === 'outgoing' ? ('me' as const) : ('them' as const),
     time: timeStr,
+    createdAt: bm.createdAt,
     status: (bm.status as any) || 'read',
     type: (bm.messageType as any) || 'text',
     mediaUrl: bm.mediaUrl, // Relativo, resuelto en ChatWindow con auth
@@ -58,7 +60,12 @@ async function loadRecipients() {
     const loaded = await Promise.all(
       list.map(async (c, idx) => {
         try {
-          const history = await notificationsService.getMessages(c.id, 50)
+          const history = await notificationsService.getMessages(c.id, PAGE_SIZE)
+          chatPagination.value[String(c.id)] = {
+            hasMore: !!history.hasMore,
+            loading: false,
+            oldestId: history.oldestId ?? null,
+          }
           return {
             id: String(c.id),
             name: c.name,
@@ -71,6 +78,7 @@ async function loadRecipients() {
             isGroup: c.phone.includes('grupo') || !c.phone.startsWith('+')
           }
         } catch (e) {
+          chatPagination.value[String(c.id)] = { hasMore: false, loading: false, oldestId: null }
           return {
             id: String(c.id),
             name: c.name,
@@ -85,7 +93,7 @@ async function loadRecipients() {
         }
       })
     )
-    
+
     mockChats.value = loaded
   } catch (err: any) {
     console.error('Error al cargar destinatarios del backend:', err)
@@ -206,7 +214,7 @@ async function handleSendMessage(
 ) {
   if (!selectedChat.value) return
   const currentChat = selectedChat.value
-  const msgId = 'msg_' + Date.now()
+  const msgId = 'msg_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8)
   const timeStr = getCurrentTime()
 
   // Limpiar borrador
@@ -217,43 +225,56 @@ async function handleSendMessage(
     text,
     sender: 'me',
     time: timeStr,
+    createdAt: new Date().toISOString(),
     status: 'sent',
     replyTo: replyTo ? { ...replyTo } : undefined,
     type,
     fileSize
   })
 
+  const queue = pendingOutgoing.get(currentChat.id) ?? []
+  queue.push(msgId)
+  pendingOutgoing.set(currentChat.id, queue)
+
+  const dropFromQueue = () => {
+    const q = pendingOutgoing.get(currentChat.id)
+    if (!q) return
+    const idx = q.indexOf(msgId)
+    if (idx >= 0) q.splice(idx, 1)
+  }
+
   try {
-    let response: { success: boolean; messageId: string; error?: string }
-    if (type === 'text') {
-      response = await notificationsService.sendText(currentChat.id, text)
-    } else {
+    const response = await chainSend(currentChat.id, async () => {
+      if (type === 'text') {
+        return notificationsService.sendText(currentChat.id, text)
+      }
       const file = await urlToBlob(text, type === 'audio' ? 'voice_note.ogg' : text.split('/').pop() || 'media')
-      response = await notificationsService.sendMedia(currentChat.id, file, type === 'image' ? 'Imagen adjunta' : '')
-    }
+      return notificationsService.sendMedia(currentChat.id, file, type === 'image' ? 'Imagen adjunta' : '')
+    })
 
     const found = currentChat.messages.find((m: any) => m.id === msgId)
     if (found && response.success) {
       found.id = response.messageId
       found.status = 'delivered'
+      dropFromQueue()
       setTimeout(() => { if (found) found.status = 'read' }, 1500)
     } else if (found) {
       found.status = 'failed'
-      alert(`No se pudo enviar el mensaje: ${response.error ?? 'error desconocido del agente WhatsApp'}`)
+      ;(found as any).errorReason = response.error ?? 'error desconocido del agente WhatsApp'
+      dropFromQueue()
+      console.warn(`[send-failed] chat=${currentChat.id} reason=${response.error}`)
+    } else {
+      dropFromQueue()
     }
   }
   catch (err: any) {
     console.error('Error enviando mensaje al backend NestJS:', err)
     const found = currentChat.messages.find((m: any) => m.id === msgId)
-    if (found) found.status = 'failed'
-    const status = err?.statusCode || err?.response?.status
-    const backendMsg =
-      err?.data?.message ||
-      err?.response?._data?.message ||
-      err?.message ||
-      'sin detalle'
-    const detail = Array.isArray(backendMsg) ? backendMsg.join(', ') : backendMsg
-    alert(`No se pudo enviar el mensaje (HTTP ${status ?? '?'}): ${detail}`)
+    if (found) {
+      found.status = 'failed'
+      ;(found as any).errorReason = err?.message ?? 'error de red'
+    }
+    dropFromQueue()
   }
 }
 
@@ -320,16 +341,64 @@ let offMessage: (() => void) | null = null
 let offStatus: (() => void) | null = null
 let offTranscription: (() => void) | null = null
 const subscribedRecipients = new Set<string>()
+const pendingOutgoing = new Map<string, string[]>()
+const sendChain = new Map<string, Promise<unknown>>()
+const chatPagination = ref<Record<string, { hasMore: boolean; loading: boolean; oldestId: string | null }>>({})
+const PAGE_SIZE = 30
+const SEND_THROTTLE_MS = 300
+
+function chainSend<T>(chatId: string, fn: () => Promise<T>): Promise<T> {
+  const prev = sendChain.get(chatId) ?? Promise.resolve()
+  const next = prev
+    .catch(() => undefined)
+    .then(async () => {
+      const out = await fn()
+      await new Promise(r => setTimeout(r, SEND_THROTTLE_MS))
+      return out
+    })
+  sendChain.set(chatId, next)
+  return next as Promise<T>
+}
 
 function pushIncomingMessage(msg: RealtimeMessage) {
   const rid = msg.recipientId != null ? String(msg.recipientId) : null
   if (!rid) return
   const chat = mockChats.value.find(c => c.id === rid)
   if (!chat) return
-  const exists = chat.messages?.some((m: any) => m.id === (msg as any).id)
-  if (exists) return
+
+  const incomingId = msg.conversationId || (msg as any).id || null
+
+  if (incomingId && chat.messages?.some((m: any) => m.id === incomingId)) {
+    return
+  }
+
+  if (msg.direction === 'outgoing' && incomingId) {
+    const queue = pendingOutgoing.get(rid)
+    if (queue && queue.length) {
+      const localId = queue.shift()!
+      const optimistic = (chat.messages || []).find((m: any) => m.id === localId)
+      if (optimistic) {
+        optimistic.id = incomingId
+        optimistic.status = msg.status ?? optimistic.status ?? 'sent'
+        return
+      }
+    }
+    const text = msg.message ?? ''
+    const optimistic = (chat.messages || []).find((m: any) =>
+      m.sender === 'me'
+      && typeof m.id === 'string'
+      && m.id.startsWith('msg_')
+      && (m.text ?? '') === text,
+    )
+    if (optimistic) {
+      optimistic.id = incomingId
+      optimistic.status = msg.status ?? optimistic.status ?? 'sent'
+      return
+    }
+  }
+
   const mapped = mapBackendMessage({
-    id: (msg as any).id ?? `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    id: incomingId ?? `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     message: msg.message ?? '',
     direction: msg.direction,
     messageType: msg.messageType,
@@ -341,8 +410,11 @@ function pushIncomingMessage(msg: RealtimeMessage) {
     sender: msg.direction === 'outgoing' ? 'me' : 'them',
   } as any)
   chat.messages = [...(chat.messages || []), mapped]
-  if (msg.direction === 'incoming' && selectedChatId.value !== rid) {
-    chat.unreadCount = (chat.unreadCount || 0) + 1
+  if (msg.direction === 'incoming') {
+    if (selectedChatId.value !== rid) {
+      chat.unreadCount = (chat.unreadCount || 0) + 1
+    }
+    playNotificationSound()
   }
 }
 
@@ -377,28 +449,84 @@ function subscribeAllRecipients() {
   })
 }
 
+function mergeHistoryWithLocal(existing: any[], remote: any[]): any[] {
+  const byId = new Map<string, any>()
+  for (const m of remote) byId.set(m.id, m)
+  // Preserva locales que no llegaron en remote (pending optimistic + WS que aún no persistió backend)
+  for (const m of existing || []) {
+    if (!m || !m.id) continue
+    if (!byId.has(m.id)) byId.set(m.id, m)
+  }
+  // Orden cronológico por createdAt (fallback time si no hay)
+  return Array.from(byId.values()).sort((a, b) => {
+    const ta = a.createdAt ? Date.parse(a.createdAt) : 0
+    const tb = b.createdAt ? Date.parse(b.createdAt) : 0
+    if (ta && tb) return ta - tb
+    return 0
+  })
+}
+
 watch(selectedChatId, (newId) => {
   if (!newId) return
   const chat = mockChats.value.find(c => c.id === newId)
   if (chat) {
     chat.unreadCount = 0
-    notificationsService.getMessages(newId, 50).then(history => {
-      chat.messages = history.messages.map(mapBackendMessage)
+    notificationsService.getMessages(newId, PAGE_SIZE).then(history => {
+      const remote = history.messages.map(mapBackendMessage)
+      chat.messages = mergeHistoryWithLocal(chat.messages || [], remote)
+      chatPagination.value[newId] = {
+        hasMore: !!history.hasMore,
+        loading: false,
+        oldestId: history.oldestId ?? null,
+      }
     }).catch(e => console.error('Error loading initial messages:', e))
   }
 })
+
+async function handleLoadMoreMessages(chatId: string) {
+  const state = chatPagination.value[chatId]
+  if (!state || !state.hasMore || state.loading || !state.oldestId) return
+  state.loading = true
+  try {
+    const history = await notificationsService.getMessages(chatId, PAGE_SIZE, state.oldestId)
+    const chat = mockChats.value.find(c => c.id === chatId)
+    if (!chat) return
+    const older = history.messages.map(mapBackendMessage)
+    // Merge older en cabeza preservando posteriores
+    const existingIds = new Set((chat.messages || []).map((m: any) => m.id))
+    const prepend = older.filter(m => !existingIds.has(m.id))
+    chat.messages = [...prepend, ...(chat.messages || [])]
+    chatPagination.value[chatId] = {
+      hasMore: !!history.hasMore,
+      loading: false,
+      oldestId: history.oldestId ?? state.oldestId,
+    }
+  }
+  catch (e) {
+    console.error('Error cargando mensajes previos:', e)
+    state.loading = false
+  }
+}
 
 watch(() => mockChats.value.length, () => {
   if (wsClient.socket?.connected) subscribeAllRecipients()
 })
 
 // ─── Init ──────────────────────────────────────────────────────────────────────
+function handleFirstGesture() {
+  primeNotificationSound()
+  window.removeEventListener('pointerdown', handleFirstGesture)
+  window.removeEventListener('keydown', handleFirstGesture)
+}
+
 onMounted(async () => {
   wa.refreshStatus()
   wsClient.connect()
   offMessage = wsClient.onMessage(pushIncomingMessage)
   offStatus = wsClient.onStatus(applyStatusUpdate)
   offTranscription = wsClient.onTranscription(applyTranscription)
+  window.addEventListener('pointerdown', handleFirstGesture, { once: false })
+  window.addEventListener('keydown', handleFirstGesture, { once: false })
   await loadRecipients()
   subscribeAllRecipients()
 })
@@ -407,6 +535,8 @@ onBeforeUnmount(() => {
   offMessage?.()
   offStatus?.()
   offTranscription?.()
+  window.removeEventListener('pointerdown', handleFirstGesture)
+  window.removeEventListener('keydown', handleFirstGesture)
   wsClient.disconnect()
 })
 </script>
@@ -441,8 +571,11 @@ onBeforeUnmount(() => {
         :chat="selectedChat"
         :sending="sending"
         :draft-text="drafts[selectedChat.id]"
+        :has-more-messages="chatPagination[selectedChat.id]?.hasMore ?? false"
+        :loading-older="chatPagination[selectedChat.id]?.loading ?? false"
         @send-message="handleSendMessage"
         @update-draft="(val) => drafts[selectedChat.id] = val"
+        @load-more="handleLoadMoreMessages(selectedChat.id)"
       />
       <WhatsappWelcomeScreen v-else />
     </div>

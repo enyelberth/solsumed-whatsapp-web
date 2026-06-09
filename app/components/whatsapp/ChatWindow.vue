@@ -43,6 +43,8 @@ const props = defineProps<{
   chat: Chat
   sending: boolean
   draftText?: string
+  hasMoreMessages?: boolean
+  loadingOlder?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -53,6 +55,7 @@ const emit = defineEmits<{
     fileSize?: number
   ]
   'update-draft': [val: string]
+  'load-more': []
 }>()
 
 // ── Ref declarations ───────────────────────────────────────────────
@@ -165,6 +168,51 @@ function scrollToBottom() {
       messageContainer.value.scrollTop = messageContainer.value.scrollHeight
     }
   })
+}
+
+// Trigger load-more cuando scroll cerca tope; preserva posición visual.
+let loadMoreLocked = false
+async function handleScrollContainer() {
+  const el = messageContainer.value
+  if (!el) return
+  if (el.scrollTop < 60 && props.hasMoreMessages && !props.loadingOlder && !loadMoreLocked) {
+    loadMoreLocked = true
+    const prevHeight = el.scrollHeight
+    const prevTop = el.scrollTop
+    emit('load-more')
+    // Espera próximo render del prepend; ajusta scrollTop para que vista quede pegada
+    await nextTick()
+    requestAnimationFrame(() => {
+      if (!messageContainer.value) return
+      const newHeight = messageContainer.value.scrollHeight
+      messageContainer.value.scrollTop = prevTop + (newHeight - prevHeight)
+      loadMoreLocked = false
+    })
+  }
+}
+
+// Auto-scroll bottom solo si el usuario ya estaba cerca del final
+const isNearBottom = ref(true)
+watch(
+  () => props.chat.messages.length,
+  () => {
+    if (isNearBottom.value) {
+      scrollToBottom()
+    }
+  },
+)
+watch(
+  () => props.chat.id,
+  () => {
+    isNearBottom.value = true
+    nextTick(() => scrollToBottom())
+  },
+)
+function trackNearBottom() {
+  const el = messageContainer.value
+  if (!el) return
+  const distance = el.scrollHeight - (el.scrollTop + el.clientHeight)
+  isNearBottom.value = distance < 120
 }
 
 function toggleInfoPanel() {
@@ -330,20 +378,66 @@ function selectSearchedMessage(msgId: string) {
 }
 
 // ── Voice recording logic ──────────────────────────────────────────
+function pickAudioMime(): string {
+  // Orden preferido por compatibilidad WhatsApp Cloud API
+  const candidates = [
+    'audio/ogg;codecs=opus',
+    'audio/webm;codecs=opus',
+    'audio/mp4',
+    'audio/mpeg',
+  ]
+  const MR: any = (window as any).MediaRecorder
+  if (MR && typeof MR.isTypeSupported === 'function') {
+    for (const m of candidates) {
+      if (MR.isTypeSupported(m)) return m
+    }
+  }
+  return 'audio/ogg;codecs=opus'
+}
+
 async function startRecording() {
+  // mediaDevices ausente solo en contexto no-seguro (http + no-localhost)
+  if (!navigator.mediaDevices || typeof navigator.mediaDevices.getUserMedia !== 'function') {
+    const host = `${location.protocol}//${location.host}`
+    console.error('[mic] mediaDevices undefined. host=', host, 'secure=', window.isSecureContext)
+    alert(
+      `Tu navegador bloquea el micrófono porque no es contexto seguro.\n\n`
+      + `URL actual: ${host}\n\n`
+      + `Opciones:\n`
+      + `• Abre http://localhost:${location.port || 9000} (no la IP)\n`
+      + `• O ejecuta dev con HTTPS_DEV=true npm run dev y entra por https://...\n`
+      + `• O sirve detrás de proxy con HTTPS válido`,
+    )
+    return
+  }
+
+  // Llamar getUserMedia SIN await previo para preservar transient activation del click
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-    mediaRecorder = new MediaRecorder(stream)
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+      },
+    })
+
+    const mime = pickAudioMime()
+    try {
+      mediaRecorder = new MediaRecorder(stream, { mimeType: mime })
+    }
+    catch {
+      mediaRecorder = new MediaRecorder(stream)
+    }
     audioChunks = []
 
     mediaRecorder.ondataavailable = (event) => {
-      audioChunks.push(event.data)
+      if (event.data && event.data.size > 0) audioChunks.push(event.data)
     }
 
     mediaRecorder.onstop = () => {
-      const audioBlob = new Blob(audioChunks, { type: 'audio/ogg; codecs=opus' })
+      const blobMime = mediaRecorder?.mimeType || mime || 'audio/ogg'
+      const audioBlob = new Blob(audioChunks, { type: blobMime })
       const audioUrl = URL.createObjectURL(audioBlob)
-
       emit('send-message', audioUrl, undefined, 'audio')
       stream.getTracks().forEach(track => track.stop())
     }
@@ -354,9 +448,47 @@ async function startRecording() {
     recordingInterval.value = setInterval(() => {
       recordingDuration.value++
     }, 1000)
-  } catch (err) {
-    console.error('Error al acceder al micrófono:', err)
-    alert('No se pudo acceder al micrófono.')
+  }
+  catch (err: any) {
+    console.error('[mic] getUserMedia error:', err?.name, err?.message, err)
+    const name = err?.name
+    let msg = err?.message || 'desconocido'
+    let hint = ''
+
+    if (name === 'NotAllowedError' || name === 'PermissionDeniedError') {
+      // Diagnóstico: ¿denegado permanentemente o solo el prompt cancelado?
+      let denied = false
+      try {
+        const perms = (navigator as any).permissions
+        if (perms?.query) {
+          const status = await perms.query({ name: 'microphone' as PermissionName })
+          denied = status.state === 'denied'
+          console.log('[mic] post-fail permission state:', status.state)
+        }
+      }
+      catch {}
+      msg = denied ? 'Permiso denegado permanentemente.' : 'Permiso rechazado o prompt cancelado.'
+      hint = `\nResetea permiso del sitio:\n`
+        + `• Chrome/Edge: ícono candado/info junto a URL → Permisos → Micrófono → Permitir → recarga\n`
+        + `• Firefox: candado → Conexión segura → Permisos → Usar micrófono → Permitir → recarga\n`
+        + `• Brave: candado → Configuración del sitio → Micrófono → Permitir`
+    }
+    else if (name === 'NotFoundError' || name === 'DevicesNotFoundError') {
+      msg = 'No se detectó micrófono conectado.'
+      hint = '\nConecta uno y reintenta.'
+    }
+    else if (name === 'NotReadableError') {
+      msg = 'Micrófono ocupado por otra app o pestaña.'
+      hint = '\nCierra otras apps usando el mic (Zoom, Meet, etc) e intenta otra vez.'
+    }
+    else if (name === 'SecurityError') {
+      msg = 'Bloqueado por seguridad: requiere HTTPS o localhost.'
+      hint = `\nAccede por http://localhost:${location.port || 9000} o activa HTTPS dev.`
+    }
+    else if (name === 'AbortError') {
+      msg = 'Operación cancelada.'
+    }
+    alert(`No se pudo acceder al micrófono: ${msg}${hint}`)
   }
 }
 
@@ -586,8 +718,21 @@ onBeforeUnmount(() => {
       <div
         ref="messageContainer"
         class="flex-1 overflow-y-auto wa-scrollbar wa-chat-bg"
+        @scroll="handleScrollContainer(); trackNearBottom()"
       >
         <div class="flex flex-col py-4 px-3 gap-[2px]">
+          <!-- Indicador cargando mensajes previos -->
+          <div v-if="loadingOlder" class="flex justify-center my-2">
+            <span class="text-[11px] text-[#54656f] dark:text-[#8696a0] bg-[#ffffff] dark:bg-[#182229] rounded-lg px-3 py-1 shadow-sm">
+              Cargando mensajes previos...
+            </span>
+          </div>
+          <div v-else-if="!hasMoreMessages && chat.messages.length > 0" class="flex justify-center my-2">
+            <span class="text-[10px] text-[#54656f]/60 dark:text-[#8696a0]/60 px-3 py-1">
+              · Inicio de la conversación ·
+            </span>
+          </div>
+
           <!-- Date stamp -->
           <div class="flex justify-center my-3">
             <span class="text-[12px] text-[#54656f] dark:text-[#8696a0] bg-[#ffffff] dark:bg-[#182229] rounded-lg px-3 py-[5px] shadow-sm font-normal tracking-wide">
@@ -807,6 +952,7 @@ onBeforeUnmount(() => {
                     <svg v-else-if="msg.status === 'read'" viewBox="0 0 16 15" width="16" height="15" class="text-[#53bdeb]">
                       <path fill="currentColor" d="M15.01 3.316l-.478-.372a.365.365 0 0 0-.51.063L8.666 9.879a.32.32 0 0 1-.484.033l-.358-.325a.319.319 0 0 0-.484.032l-.378.483a.418.418 0 0 0 .036.541l1.32 1.266c.143.14.361.125.484-.033l6.272-8.048a.366.366 0 0 0-.064-.512zm-4.1 0l-.478-.372a.365.365 0 0 0-.51.063L4.566 9.879a.32.32 0 0 1-.484.033L1.891 7.769a.366.366 0 0 0-.515.006l-.423.433a.364.364 0 0 0 .006.514l3.258 3.185c.143.14.361.125.484-.033l6.272-8.048a.365.365 0 0 0-.063-.51z"/>
                     </svg>
+                    <span v-else-if="msg.status === 'failed'" :title="msg.errorReason || 'Falló envío'" class="text-red-500 text-[11px] font-semibold leading-none">⚠</span>
                   </template>
                 </div>
 

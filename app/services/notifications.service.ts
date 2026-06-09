@@ -34,6 +34,8 @@ export interface BackendMessage {
 export interface ChatHistoryResponse {
   recipient: Recipient
   total: number
+  hasMore: boolean
+  oldestId: string | null
   messages: BackendMessage[]
 }
 
@@ -106,9 +108,17 @@ export const notificationsService = {
     }
   },
 
-  async getMessages(recipientId: number | string, limit = 50): Promise<ChatHistoryResponse> {
+  async getMessages(
+    recipientId: number | string,
+    limit = 50,
+    before?: string,
+  ): Promise<ChatHistoryResponse> {
     const api = useSolsumedApi()
-    return api<ChatHistoryResponse>(`/notifications/recipients/${recipientId}/messages?limit=${limit}`)
+    const qs = new URLSearchParams({ limit: String(limit) })
+    if (before) qs.set('before', before)
+    return api<ChatHistoryResponse>(
+      `/notifications/recipients/${recipientId}/messages?${qs.toString()}`,
+    )
   },
 
   async updateRecipient(recipientId: number | string, data: any): Promise<Recipient> {
