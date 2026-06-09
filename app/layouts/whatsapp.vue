@@ -3,6 +3,7 @@ import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { storeToRefs } from 'pinia'
 import { notificationsService } from '~/services/notifications.service'
 import type { BackendMessage } from '~/services/notifications.service'
+import type { RealtimeMessage, RealtimeStatus, RealtimeTranscription } from '~/composables/useNotificationsSocket'
 
 const auth = useAuthStore()
 const { user } = storeToRefs(auth)
@@ -37,6 +38,12 @@ function mapBackendMessage(bm: BackendMessage) {
     status: (bm.status as any) || 'read',
     type: (bm.messageType as any) || 'text',
     mediaUrl: bm.mediaUrl, // Relativo, resuelto en ChatWindow con auth
+    mediaMimeType: bm.mediaMimeType,
+    mediaFilename: bm.mediaFilename,
+    transcription: bm.transcription ?? null,
+    transcriptionStatus: bm.transcriptionStatus ?? null,
+    transcriptionLang: bm.transcriptionLang ?? null,
+    transcriptionMeta: bm.transcriptionMeta ?? null,
   }
 }
 
@@ -194,7 +201,7 @@ async function handleAddChat(payload: {
 async function handleSendMessage(
   text: string,
   replyTo?: { id: string; text: string; sender: string },
-  type: 'text' | 'image' | 'file' | 'audio' = 'text',
+  type: 'text' | 'image' | 'file' | 'audio' | 'video' | 'document' | 'sticker' | 'sticker_animated' | 'gif' = 'text',
   fileSize?: number
 ) {
   if (!selectedChat.value) return
@@ -307,52 +314,100 @@ function handleLogout() {
   router.push('/login')
 }
 
-// ─── Polling de mensajes (Real-time sync) ──────────────────────────────────
-const pollInterval = ref<any>(null)
+// ─── Real-time (WebSocket) ──────────────────────────────────────────────────
+const wsClient = useNotificationsSocket()
+let offMessage: (() => void) | null = null
+let offStatus: (() => void) | null = null
+let offTranscription: (() => void) | null = null
+const subscribedRecipients = new Set<string>()
 
-function startPollingMessages() {
-  stopPollingMessages()
-  pollInterval.value = setInterval(async () => {
-    if (!selectedChat.value) return
-    const currentChat = selectedChat.value
-    try {
-      const history = await notificationsService.getMessages(currentChat.id, 50)
-      currentChat.messages = history.messages.map(mapBackendMessage)
-    } catch (e) {
-      console.error('Error polling messages:', e)
-    }
-  }, 5000)
+function pushIncomingMessage(msg: RealtimeMessage) {
+  const rid = msg.recipientId != null ? String(msg.recipientId) : null
+  if (!rid) return
+  const chat = mockChats.value.find(c => c.id === rid)
+  if (!chat) return
+  const exists = chat.messages?.some((m: any) => m.id === (msg as any).id)
+  if (exists) return
+  const mapped = mapBackendMessage({
+    id: (msg as any).id ?? `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    message: msg.message ?? '',
+    direction: msg.direction,
+    messageType: msg.messageType,
+    mediaUrl: msg.mediaUrl ?? undefined,
+    mediaMimeType: msg.mediaMimeType ?? undefined,
+    mediaFilename: msg.mediaFilename ?? undefined,
+    status: msg.status ?? 'sent',
+    createdAt: msg.createdAt,
+    sender: msg.direction === 'outgoing' ? 'me' : 'them',
+  } as any)
+  chat.messages = [...(chat.messages || []), mapped]
+  if (msg.direction === 'incoming' && selectedChatId.value !== rid) {
+    chat.unreadCount = (chat.unreadCount || 0) + 1
+  }
 }
 
-function stopPollingMessages() {
-  if (pollInterval.value) {
-    clearInterval(pollInterval.value)
-    pollInterval.value = null
-  }
+function applyTranscription(payload: RealtimeTranscription) {
+  const rid = payload.recipientId != null ? String(payload.recipientId) : null
+  if (!rid) return
+  const chat = mockChats.value.find(c => c.id === rid)
+  if (!chat?.messages?.length) return
+  const target = chat.messages.find((m: any) => m.id === payload.conversationId)
+  if (!target) return
+  target.transcription = payload.transcription
+  target.transcriptionLang = payload.transcriptionLang
+  target.transcriptionMeta = payload.transcriptionMeta
+  target.transcriptionStatus = 'done'
+}
+
+function applyStatusUpdate(payload: RealtimeStatus) {
+  const rid = payload.recipientId != null ? String(payload.recipientId) : null
+  if (!rid) return
+  const chat = mockChats.value.find(c => c.id === rid)
+  if (!chat?.messages?.length) return
+  const last = chat.messages[chat.messages.length - 1]
+  if (last && last.sender === 'me') last.status = payload.status
+}
+
+function subscribeAllRecipients() {
+  mockChats.value.forEach(c => {
+    if (subscribedRecipients.has(c.id)) return
+    wsClient.subscribeRecipient(c.id)
+    if (c.phone) wsClient.subscribePhone(c.phone)
+    subscribedRecipients.add(c.id)
+  })
 }
 
 watch(selectedChatId, (newId) => {
-  if (newId) {
-    const chat = mockChats.value.find(c => c.id === newId)
-    if (chat) {
-      notificationsService.getMessages(newId, 50).then(history => {
-        chat.messages = history.messages.map(mapBackendMessage)
-      }).catch(e => console.error('Error loading initial messages:', e))
-    }
-    startPollingMessages()
-  } else {
-    stopPollingMessages()
+  if (!newId) return
+  const chat = mockChats.value.find(c => c.id === newId)
+  if (chat) {
+    chat.unreadCount = 0
+    notificationsService.getMessages(newId, 50).then(history => {
+      chat.messages = history.messages.map(mapBackendMessage)
+    }).catch(e => console.error('Error loading initial messages:', e))
   }
+})
+
+watch(() => mockChats.value.length, () => {
+  if (wsClient.socket?.connected) subscribeAllRecipients()
 })
 
 // ─── Init ──────────────────────────────────────────────────────────────────────
 onMounted(async () => {
   wa.refreshStatus()
+  wsClient.connect()
+  offMessage = wsClient.onMessage(pushIncomingMessage)
+  offStatus = wsClient.onStatus(applyStatusUpdate)
+  offTranscription = wsClient.onTranscription(applyTranscription)
   await loadRecipients()
+  subscribeAllRecipients()
 })
 
 onBeforeUnmount(() => {
-  stopPollingMessages()
+  offMessage?.()
+  offStatus?.()
+  offTranscription?.()
+  wsClient.disconnect()
 })
 </script>
 

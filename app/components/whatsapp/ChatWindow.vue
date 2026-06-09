@@ -1,5 +1,7 @@
 <script setup lang="ts">
-import { ref, computed, watch, nextTick, onMounted } from 'vue'
+import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
+
+type MessageType = 'text' | 'image' | 'file' | 'audio' | 'video' | 'document' | 'sticker' | 'sticker_animated' | 'gif'
 
 interface Message {
   id: string
@@ -9,10 +11,21 @@ interface Message {
   status: 'sent' | 'delivered' | 'read'
   reaction?: string
   replyTo?: { id: string; text: string; sender: string }
-  type?: 'text' | 'image' | 'file' | 'audio'
+  type?: MessageType
   fileSize?: number
   isStarred?: boolean
   mediaUrl?: string
+  mediaMimeType?: string
+  mediaFilename?: string
+  transcription?: string | null
+  transcriptionStatus?: string | null
+  transcriptionLang?: string | null
+  transcriptionMeta?: {
+    summary_short?: string
+    sentiment?: string
+    confidence?: number
+    duration_sec?: number | null
+  } | null
 }
 
 interface Chat {
@@ -36,7 +49,7 @@ const emit = defineEmits<{
   'send-message': [
     text: string,
     replyTo?: { id: string; text: string; sender: string },
-    type?: 'text' | 'image' | 'file' | 'audio',
+    type?: MessageType,
     fileSize?: number
   ]
   'update-draft': [val: string]
@@ -413,6 +426,40 @@ function audioEnded(msgId: string) {
   audioProgress.value[msgId] = '0%'
 }
 
+const transcribingIds = ref<Set<string>>(new Set())
+
+async function requestTranscription(msg: Message) {
+  if (transcribingIds.value.has(msg.id)) return
+  transcribingIds.value.add(msg.id)
+  msg.transcriptionStatus = 'pending'
+  try {
+    const config = useRuntimeConfig()
+    const auth = useAuthStore()
+    const agentUrl = (config.public as any).whatsappApiUrl
+    const res = await fetch(`${agentUrl}/ai/audio/${msg.id}/transcribe`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${auth.token}` },
+    })
+    if (!res.ok) {
+      msg.transcriptionStatus = 'failed'
+      const body = await res.text()
+      console.warn('retranscribe failed:', body)
+    }
+  } catch (e) {
+    msg.transcriptionStatus = 'failed'
+    console.error('retranscribe error:', e)
+  } finally {
+    transcribingIds.value.delete(msg.id)
+  }
+}
+
+function sentimentEmoji(s?: string | null): string {
+  if (s === 'positive') return '😀'
+  if (s === 'negative') return '😠'
+  if (s === 'neutral') return '😐'
+  return ''
+}
+
 // ── Media Download Logic ──────────────────────────────────────────
 const resolvedMediaUrls = ref<Record<string, string>>({})
 
@@ -475,6 +522,20 @@ watch(inputMessage, (newVal) => {
 
 watch(() => props.chat.messages.length, scrollToBottom)
 onMounted(scrollToBottom)
+
+onBeforeUnmount(() => {
+  if (playingAudioId.value) {
+    const audioEl = document.getElementById('audio-' + playingAudioId.value) as HTMLAudioElement | null
+    audioEl?.pause()
+    playingAudioId.value = null
+  }
+  Object.values(resolvedMediaUrls.value).forEach(url => {
+    if (typeof url === 'string' && url.startsWith('blob:')) {
+      try { URL.revokeObjectURL(url) } catch {}
+    }
+  })
+  resolvedMediaUrls.value = {}
+})
 </script>
 
 <template>
@@ -594,27 +655,101 @@ onMounted(scrollToBottom)
                   </button>
                 </div>
 
-                <!-- Media: Custom Audio Player -->
-                <div v-else-if="msg.type === 'audio'" class="mb-1 py-1.5 px-0.5 flex items-center gap-3 w-64 select-none">
-                  <button @click="togglePlayAudio(msg.id)"
-                    class="w-10 h-10 rounded-full bg-[#00a884] text-white flex items-center justify-center shrink-0 hover:scale-105 active:scale-95 transition-transform"
-                    title="Reproducir audio"
-                  >
-                    <UIcon :name="playingAudioId === msg.id ? 'i-lucide-pause' : 'i-lucide-play'" class="w-5 h-5 fill-current" :class="playingAudioId === msg.id ? 'ml-0' : 'ml-0.5'" />
+                <!-- Media: GIF (WhatsApp manda mp4 sin audio, loop autoplay) -->
+                <div v-else-if="msg.type === 'gif'" class="mb-1 rounded overflow-hidden max-w-[280px] bg-black relative group">
+                  <video
+                    :src="resolvedMediaUrls[msg.id] || msg.text"
+                    autoplay
+                    loop
+                    muted
+                    playsinline
+                    preload="auto"
+                    class="w-full h-auto max-h-[360px]"
+                  />
+                  <span class="absolute top-1.5 left-1.5 rounded bg-black/55 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-widest text-white opacity-90">
+                    GIF
+                  </span>
+                </div>
+
+                <!-- Media: Video con controles -->
+                <div v-else-if="msg.type === 'video'" class="mb-1 rounded overflow-hidden max-w-[320px] bg-black">
+                  <video
+                    :src="resolvedMediaUrls[msg.id] || msg.text"
+                    controls
+                    preload="metadata"
+                    class="w-full h-auto max-h-[400px]"
+                  />
+                </div>
+
+                <!-- Media: Sticker estático -->
+                <div v-else-if="msg.type === 'sticker'" class="mb-1 max-w-[160px]">
+                  <img :src="resolvedMediaUrls[msg.id] || msg.text" class="w-full h-auto" alt="sticker" />
+                </div>
+
+                <!-- Media: Sticker animado (webp animado) -->
+                <div v-else-if="msg.type === 'sticker_animated'" class="mb-1 max-w-[160px] relative">
+                  <img :src="resolvedMediaUrls[msg.id] || msg.text" class="w-full h-auto" alt="sticker animado" />
+                  <span class="absolute -top-1 -right-1 rounded-full bg-[#00a884] text-white text-[8px] font-bold px-1.5 py-0.5">
+                    ✨
+                  </span>
+                </div>
+
+                <!-- Media: Document -->
+                <div v-else-if="msg.type === 'document'" class="mb-1 p-2.5 rounded bg-black/5 dark:bg-white/5 flex items-center gap-2.5 border border-[#e9edef] dark:border-[#222d34] text-[13px] select-none min-w-[240px]">
+                  <UIcon name="i-lucide-file" class="w-9 h-9 text-[#7f66ff] shrink-0" />
+                  <div class="flex-1 min-w-0">
+                    <div class="font-medium text-[#111b21] dark:text-[#e9edef] truncate leading-tight">{{ msg.mediaFilename || msg.text || 'Documento' }}</div>
+                    <div class="text-[10px] text-[#667781] dark:text-[#8696a0] mt-0.5">{{ msg.mediaMimeType || 'archivo' }}</div>
+                  </div>
+                  <button @click="downloadResolvedFile(msg)" class="text-[#8696a0] hover:text-[#54656f] p-1.5 rounded-full hover:bg-black/5 dark:hover:bg-white/5" title="Descargar">
+                    <UIcon name="i-lucide-download" class="w-4 h-4" />
                   </button>
-                  <div class="flex-1 flex flex-col gap-1 min-w-0">
-                    <!-- Progress bar -->
-                    <div class="h-1 bg-black/10 dark:bg-white/10 rounded-full overflow-hidden relative">
-                      <div class="absolute left-0 top-0 h-full bg-[#00a884]" :style="{ width: audioProgress[msg.id] || '0%' }" />
-                    </div>
-                    <!-- Audio HTML tag in background -->
-                    <audio :id="'audio-' + msg.id" :src="resolvedMediaUrls[msg.id] || msg.text" @timeupdate="updateAudioProgress(msg.id)" @ended="audioEnded(msg.id)" class="hidden" />
-                    <!-- Subtext -->
-                    <div class="flex justify-between items-center text-[10px] text-[#667781] dark:text-[#8696a0]">
-                      <span class="truncate">Nota de voz</span>
-                      <span>{{ audioDurations[msg.id] || '0:00' }}</span>
+                </div>
+
+                <!-- Media: Custom Audio Player -->
+                <div v-else-if="msg.type === 'audio'" class="mb-1 flex flex-col gap-1.5 select-none">
+                  <div class="py-1.5 px-0.5 flex items-center gap-3 w-64">
+                    <button @click="togglePlayAudio(msg.id)"
+                      class="w-10 h-10 rounded-full bg-[#00a884] text-white flex items-center justify-center shrink-0 hover:scale-105 active:scale-95 transition-transform"
+                      title="Reproducir audio"
+                    >
+                      <UIcon :name="playingAudioId === msg.id ? 'i-lucide-pause' : 'i-lucide-play'" class="w-5 h-5 fill-current" :class="playingAudioId === msg.id ? 'ml-0' : 'ml-0.5'" />
+                    </button>
+                    <div class="flex-1 flex flex-col gap-1 min-w-0">
+                      <!-- Progress bar -->
+                      <div class="h-1 bg-black/10 dark:bg-white/10 rounded-full overflow-hidden relative">
+                        <div class="absolute left-0 top-0 h-full bg-[#00a884]" :style="{ width: audioProgress[msg.id] || '0%' }" />
+                      </div>
+                      <!-- Audio HTML tag in background -->
+                      <audio :id="'audio-' + msg.id" :src="resolvedMediaUrls[msg.id] || msg.text" @timeupdate="updateAudioProgress(msg.id)" @ended="audioEnded(msg.id)" class="hidden" />
+                      <!-- Subtext -->
+                      <div class="flex justify-between items-center text-[10px] text-[#667781] dark:text-[#8696a0]">
+                        <span class="truncate flex items-center gap-1">
+                          Nota de voz
+                          <span v-if="msg.transcriptionMeta?.sentiment && msg.transcription">{{ sentimentEmoji(msg.transcriptionMeta.sentiment) }}</span>
+                        </span>
+                        <span>{{ audioDurations[msg.id] || '0:00' }}</span>
+                      </div>
                     </div>
                   </div>
+
+                  <!-- Transcripción Gemini -->
+                  <div v-if="msg.transcription" class="text-[11.5px] text-[#3b4a54] dark:text-[#aebac1] italic border-l-[3px] border-[#00a884] pl-2 py-0.5 max-w-[280px] leading-snug">
+                    <span class="text-[10px] font-bold text-[#00a884] not-italic uppercase tracking-wider">Transcripción</span>
+                    <div class="mt-0.5">{{ msg.transcription }}</div>
+                  </div>
+                  <div v-else-if="msg.transcriptionStatus === 'pending'" class="text-[10.5px] text-[#8696a0] italic pl-2 flex items-center gap-1">
+                    <UIcon name="i-lucide-loader-2" class="w-3 h-3 animate-spin" />
+                    Transcribiendo…
+                  </div>
+                  <div v-else-if="msg.transcriptionStatus === 'failed'" class="text-[10.5px] text-red-500 italic pl-2 flex items-center gap-2">
+                    Transcripción falló
+                    <button @click="requestTranscription(msg)" class="text-solsumed hover:underline font-semibold">Reintentar</button>
+                  </div>
+                  <button v-else-if="!msg.transcriptionStatus || msg.transcriptionStatus === 'skipped'" @click="requestTranscription(msg)" class="text-[10.5px] text-[#00a884] hover:underline font-semibold pl-2 text-left flex items-center gap-1">
+                    <UIcon name="i-lucide-sparkles" class="w-3 h-3" />
+                    Transcribir con IA
+                  </button>
                 </div>
 
                 <!-- Message text -->

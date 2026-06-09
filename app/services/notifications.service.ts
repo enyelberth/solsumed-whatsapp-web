@@ -13,13 +13,22 @@ export interface BackendMessage {
   id: string
   message: string
   direction: 'incoming' | 'outgoing'
-  messageType: 'text' | 'image' | 'audio' | 'file' | string
+  messageType: 'text' | 'image' | 'audio' | 'video' | 'document' | 'sticker' | 'file' | string
   mediaUrl?: string
   mediaMimeType?: string
   mediaFilename?: string
   status: string
   createdAt: string
   sender: string
+  transcription?: string | null
+  transcriptionStatus?: string | null
+  transcriptionLang?: string | null
+  transcriptionMeta?: {
+    summary_short?: string
+    sentiment?: string
+    confidence?: number
+    duration_sec?: number | null
+  } | null
 }
 
 export interface ChatHistoryResponse {
